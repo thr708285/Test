@@ -1,0 +1,11 @@
+kernel//home/thr/share/ldd3_examples/misc-modules/hello.ko
+kernel//home/thr/share/ldd3_examples/misc-modules/hellop.ko
+kernel//home/thr/share/ldd3_examples/misc-modules/seq.ko
+kernel//home/thr/share/ldd3_examples/misc-modules/jit.ko
+kernel//home/thr/share/ldd3_examples/misc-modules/jiq.ko
+kernel//home/thr/share/ldd3_examples/misc-modules/sleepy.ko
+kernel//home/thr/share/ldd3_examples/misc-modules/complete.ko
+kernel//home/thr/share/ldd3_examples/misc-modules/silly.ko
+kernel//home/thr/share/ldd3_examples/misc-modules/faulty.ko
+kernel//home/thr/share/ldd3_examples/misc-modules/kdatasize.ko
+kernel//home/thr/share/ldd3_examples/misc-modules/kdataalign.ko

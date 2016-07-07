@@ -1,0 +1,2282 @@
+Index: lddbus/lddbus.c
+===================================================================
+--- lddbus/lddbus.c	(revision 95)
++++ lddbus/lddbus.c	(working copy)
+@@ -30,14 +30,12 @@
+ /*
+  * Respond to hotplug events.
+  */
+-static int ldd_hotplug(struct device *dev, char **envp, int num_envp,
+-		char *buffer, int buffer_size)
++static int ldd_uevent(struct device *dev, struct kobj_uevent_env *env)
+ {
+-	envp[0] = buffer;
+-	if (snprintf(buffer, buffer_size, "LDDBUS_VERSION=%s",
+-			    Version) >= buffer_size)
+-		return -ENOMEM;
+-	envp[1] = NULL;
++	if (snprintf(env->buf, env->buflen, "LDDBUS_VERSION=%s",
++	Version) >= UEVENT_BUFFER_SIZE)
++	return -ENOMEM;
++	env->envp[1] = NULL;
+ 	return 0;
+ }
+ 
+@@ -46,7 +44,7 @@
+  */
+ static int ldd_match(struct device *dev, struct device_driver *driver)
+ {
+-	return !strncmp(dev->bus_id, driver->name, strlen(driver->name));
++	return !strncmp(dev->init_name, driver->name, strlen(driver->name));
+ }
+ 
+ 
+@@ -59,7 +57,7 @@
+ }
+ 	
+ struct device ldd_bus = {
+-	.bus_id   = "ldd0",
++	.init_name = "ldd0",
+ 	.release  = ldd_bus_release
+ };
+ 
+@@ -70,7 +68,7 @@
+ struct bus_type ldd_bus_type = {
+ 	.name = "ldd",
+ 	.match = ldd_match,
+-	.hotplug  = ldd_hotplug,
++	.uevent = ldd_uevent,
+ };
+ 
+ /*
+@@ -102,7 +100,7 @@
+ 	ldddev->dev.bus = &ldd_bus_type;
+ 	ldddev->dev.parent = &ldd_bus;
+ 	ldddev->dev.release = ldd_dev_release;
+-	strncpy(ldddev->dev.bus_id, ldddev->name, BUS_ID_SIZE);
++	//strncpy(ldddev->dev.bus_id, ldddev->name, BUS_ID_SIZE);
+ 	return device_register(&ldddev->dev);
+ }
+ EXPORT_SYMBOL(register_ldd_device);
+Index: lddbus/Makefile
+===================================================================
+--- lddbus/Makefile	(revision 95)
++++ lddbus/Makefile	(working copy)
+@@ -7,7 +7,7 @@
+ else
+   DEBFLAGS = -O2
+ endif
+-CFLAGS  += $(DEBFLAGS) -I$(LDDINCDIR)
++EXTRA_CFLAGS  += $(DEBFLAGS) -I$(LDDINCDIR)
+ 
+ 
+ ifneq ($(KERNELRELEASE),)
+@@ -31,7 +31,7 @@
+ 	rm -rf *.o *.ko *~ core .depend *.mod.c .*.cmd .tmp_versions .*.o.d
+ 
+ depend .depend dep:
+-	$(CC) $(CFLAGS) -M *.c > .depend
++	$(CC) $(EXTRA_CFLAGS) -M *.c > .depend
+ 
+ 
+ ifeq (.depend,$(wildcard .depend))
+Index: misc-modules/jiq.c
+===================================================================
+--- misc-modules/jiq.c	(revision 95)
++++ misc-modules/jiq.c	(working copy)
+@@ -15,7 +15,7 @@
+  * $Id: jiq.c,v 1.7 2004/09/26 07:02:43 gregkh Exp $
+  */
+  
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ #include <linux/init.h>
+@@ -53,10 +53,10 @@
+ static DECLARE_WAIT_QUEUE_HEAD (jiq_wait);
+ 
+ 
+-static struct work_struct jiq_work;
++//static struct work_struct jiq_work;
++static struct delayed_work *dwork;
+ 
+ 
+-
+ /*
+  * Keep track of info we need between task queue runs.
+  */
+@@ -78,7 +78,7 @@
+ /*
+  * Do the printing; return non-zero if the task should be rescheduled.
+  */
+-static int jiq_print(void *ptr)
++static int jiq_print(struct clientdata *ptr)
+ {
+ 	struct clientdata *data = ptr;
+ 	int len = data->len;
+@@ -111,17 +111,17 @@
+ /*
+  * Call jiq_print from a work queue
+  */
+-static void jiq_print_wq(void *ptr)
++static void jiq_print_wq(struct work_struct *work)
+ {
+-	struct clientdata *data = (struct clientdata *) ptr;
++	struct clientdata *data = &jiq_data;
+     
+-	if (! jiq_print (ptr))
++	if (! jiq_print (data))
+ 		return;
+     
+ 	if (data->delay)
+-		schedule_delayed_work(&jiq_work, data->delay);
++		schedule_delayed_work(dwork, data->delay);
+ 	else
+-		schedule_work(&jiq_work);
++		schedule_work(&dwork->work);
+ }
+ 
+ 
+@@ -137,7 +137,7 @@
+ 	jiq_data.delay = 0;
+     
+ 	prepare_to_wait(&jiq_wait, &wait, TASK_INTERRUPTIBLE);
+-	schedule_work(&jiq_work);
++	schedule_work(&dwork->work);
+ 	schedule();
+ 	finish_wait(&jiq_wait, &wait);
+ 
+@@ -157,7 +157,7 @@
+ 	jiq_data.delay = delay;
+     
+ 	prepare_to_wait(&jiq_wait, &wait, TASK_INTERRUPTIBLE);
+-	schedule_delayed_work(&jiq_work, delay);
++	schedule_delayed_work(dwork, delay);
+ 	schedule();
+ 	finish_wait(&jiq_wait, &wait);
+ 
+@@ -173,7 +173,7 @@
+  */
+ static void jiq_print_tasklet(unsigned long ptr)
+ {
+-	if (jiq_print ((void *) ptr))
++	if (jiq_print ((struct clientdata *)ptr))
+ 		tasklet_schedule (&jiq_tasklet);
+ }
+ 
+@@ -204,7 +204,7 @@
+ 
+ static void jiq_timedout(unsigned long ptr)
+ {
+-	jiq_print((void *)ptr);            /* print a line */
++	jiq_print((struct clientdata *)ptr); /* print a line */
+ 	wake_up_interruptible(&jiq_wait);  /* awake the process */
+ }
+ 
+@@ -241,7 +241,7 @@
+ {
+ 
+ 	/* this line is in jiq_init() */
+-	INIT_WORK(&jiq_work, jiq_print_wq, &jiq_data);
++	INIT_WORK(&dwork->work, jiq_print_wq);
+ 
+ 	create_proc_read_entry("jiqwq", 0, NULL, jiq_read_wq, NULL);
+ 	create_proc_read_entry("jiqwqdelay", 0, NULL, jiq_read_wq_delayed, NULL);
+Index: misc-modules/jit.c
+===================================================================
+--- misc-modules/jit.c	(revision 95)
++++ misc-modules/jit.c	(working copy)
+@@ -15,7 +15,7 @@
+  * $Id: jit.c,v 1.16 2004/09/26 07:02:43 gregkh Exp $
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ #include <linux/init.h>
+@@ -27,7 +27,7 @@
+ #include <linux/types.h>
+ #include <linux/spinlock.h>
+ #include <linux/interrupt.h>
+-
++#include <linux/sched.h>
+ #include <asm/hardirq.h>
+ /*
+  * This module is a silly one: it only embeds short code fragments
+@@ -130,7 +130,7 @@
+ 	int hi; /* tasklet or tasklet_hi */
+ 	wait_queue_head_t wait;
+ 	unsigned long prevjiffies;
+-	unsigned char *buf;
++	char *buf;
+ 	int loops;
+ };
+ #define JIT_ASYNC_LOOPS 5
+Index: misc-modules/kdataalign.c
+===================================================================
+--- misc-modules/kdataalign.c	(revision 95)
++++ misc-modules/kdataalign.c	(working copy)
+@@ -14,7 +14,7 @@
+  * we cannot take responsibility for errors or fitness for use.
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/kernel.h>
+ #include <linux/types.h>
+@@ -48,7 +48,7 @@
+ 		" u8 u16 u32 u64\n");
+ 	printk("%-12s  %3i   %3i   %3i   %3i   %3i   %3i      "
+ 		"%3i %3i %3i %3i\n",
+-		system_utsname.machine,
++		utsname()->machine,
+ 		/* note that gcc can subtract void * values, but it's not ansi */
+ 		(int)((void *)(&c.t)   - (void *)&c),
+ 		(int)((void *)(&s.t)   - (void *)&s),
+Index: misc-modules/kdatasize.c
+===================================================================
+--- misc-modules/kdatasize.c	(revision 95)
++++ misc-modules/kdatasize.c	(working copy)
+@@ -14,7 +14,7 @@
+  * we cannot take responsibility for errors or fitness for use.
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ 
+ #include <linux/kernel.h>
+@@ -34,7 +34,7 @@
+ 		" u8 u16 u32 u64\n");
+ 	printk("%-12s  %3i   %3i   %3i   %3i   %3i   %3i      "
+ 		"%3i %3i %3i %3i\n",
+-		system_utsname.machine,
++		utsname()->machine,
+ 		(int)sizeof(char), (int)sizeof(short), (int)sizeof(int),
+ 		(int)sizeof(long),
+ 		(int)sizeof(void *), (int)sizeof(long long), (int)sizeof(__u8),
+Index: misc-progs/inp.c
+===================================================================
+--- misc-progs/inp.c	(revision 95)
++++ misc-progs/inp.c	(working copy)
+@@ -30,7 +30,7 @@
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ 
+-#include <asm/io.h> /* linux-specific */
++#include <sys/io.h> /* linux-specific */
+ 
+ #ifdef __GLIBC__
+ #  include <sys/perm.h>
+Index: misc-progs/outp.c
+===================================================================
+--- misc-progs/outp.c	(revision 95)
++++ misc-progs/outp.c	(working copy)
+@@ -30,7 +30,7 @@
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ 
+-#include <asm/io.h> /* linux-specific */
++#include <sys/io.h> /* linux-specific */
+ 
+ #ifdef __GLIBC__
+ #  include <sys/perm.h>
+Index: misc-progs/setlevel.c
+===================================================================
+--- misc-progs/setlevel.c	(revision 95)
++++ misc-progs/setlevel.c	(working copy)
+@@ -23,11 +23,11 @@
+ #include <string.h>
+ #include <errno.h>
+ /* #include <unistd.h> */ /* conflicting on the alpha */
+-#define __LIBRARY__ /* _syscall3 and friends are only available through this */
+-#include <linux/unistd.h>
++//#define __LIBRARY__ /* _syscall3 and friends are only available through this */
++//#include <linux/unistd.h>
+ 
+ /* define the system call, to override the library function */
+-_syscall3(int, syslog, int, type, char *, bufp, int, len);
++//_syscall3(int, syslog, int, type, char *, bufp, int, len);
+ 
+ int main(int argc, char **argv)
+ {
+@@ -38,10 +38,10 @@
+     } else {
+         fprintf(stderr, "%s: need a single arg\n",argv[0]); exit(1);
+     }
+-    if (syslog(8,NULL,level) < 0) {  
+-        fprintf(stderr,"%s: syslog(setlevel): %s\n",
+-                argv[0],strerror(errno));
+-        exit(1);
+-    }
++	  if (klogctl(8, NULL, level) < 0) {  
++	        fprintf(stderr, "%s: syslog(setlevel): %s\n",  
++	              argv[0], strerror(errno));  
++	        exit(1);  
++	  } 
+     exit(0);
+ }
+Index: sbull/Makefile
+===================================================================
+--- sbull/Makefile	(revision 95)
++++ sbull/Makefile	(working copy)
+@@ -9,8 +9,8 @@
+   DEBFLAGS = -O2
+ endif
+ 
+-CFLAGS += $(DEBFLAGS)
+-CFLAGS += -I..
++EXTRA_CFLAGS += $(DEBFLAGS)
++EXTRA_CFLAGS += -I..
+ 
+ ifneq ($(KERNELRELEASE),)
+ # call from kernel build system
+Index: sbull/sbull.c
+===================================================================
+--- sbull/sbull.c	(revision 95)
++++ sbull/sbull.c	(working copy)
+@@ -2,7 +2,7 @@
+  * Sample disk driver, from the beginning.
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ #include <linux/init.h>
+@@ -101,15 +101,15 @@
+ /*
+  * The simple form of the request function.
+  */
+-static void sbull_request(request_queue_t *q)
++ static void sbull_request(struct request_queue *q)
+ {
+ 	struct request *req;
+ 
+-	while ((req = elv_next_request(q)) != NULL) {
++	 while ((req = blk_fetch_request(q)) != NULL) {
+ 		struct sbull_dev *dev = req->rq_disk->private_data;
+ 		if (! blk_fs_request(req)) {
+ 			printk (KERN_NOTICE "Skip non-fs request\n");
+-			end_request(req, 0);
++			 __blk_end_request_all(req, -EIO);
+ 			continue;
+ 		}
+     //    	printk (KERN_NOTICE "Req dev %d dir %ld sec %ld, nr %d f %lx\n",
+@@ -116,9 +116,9 @@
+     //    			dev - Devices, rq_data_dir(req),
+     //    			req->sector, req->current_nr_sectors,
+     //    			req->flags);
+-		sbull_transfer(dev, req->sector, req->current_nr_sectors,
++		sbull_transfer(dev, blk_rq_pos(req), blk_rq_sectors(req),
+ 				req->buffer, rq_data_dir(req));
+-		end_request(req, 1);
++		__blk_end_request_all(req, 0);
+ 	}
+ }
+ 
+@@ -135,9 +135,9 @@
+ 	/* Do each segment independently. */
+ 	bio_for_each_segment(bvec, bio, i) {
+ 		char *buffer = __bio_kmap_atomic(bio, i, KM_USER0);
+-		sbull_transfer(dev, sector, bio_cur_sectors(bio),
++		sbull_transfer(dev, sector, bio_cur_bytes(bio) >> 9,
+ 				buffer, bio_data_dir(bio) == WRITE);
+-		sector += bio_cur_sectors(bio);
++		sector += bio_cur_bytes(bio) >> 9;
+ 		__bio_kunmap_atomic(bio, KM_USER0);
+ 	}
+ 	return 0; /* Always "succeed" */
+@@ -148,12 +148,13 @@
+  */
+ static int sbull_xfer_request(struct sbull_dev *dev, struct request *req)
+ {
+-	struct bio *bio;
++	struct bio_vec *biov;
++	struct req_iterator riter;
+ 	int nsect = 0;
+     
+-	rq_for_each_bio(bio, req) {
+-		sbull_xfer_bio(dev, bio);
+-		nsect += bio->bi_size/KERNEL_SECTOR_SIZE;
++	 rq_for_each_segment(biov, req, riter) {
++		sbull_xfer_bio(dev, req->bio);
++		nsect += req->bio->bi_size/KERNEL_SECTOR_SIZE;
+ 	}
+ 	return nsect;
+ }
+@@ -163,23 +164,24 @@
+ /*
+  * Smarter request function that "handles clustering".
+  */
+-static void sbull_full_request(request_queue_t *q)
++static void sbull_full_request(struct request_queue *q)
+ {
+ 	struct request *req;
+ 	int sectors_xferred;
+ 	struct sbull_dev *dev = q->queuedata;
+ 
+-	while ((req = elv_next_request(q)) != NULL) {
++	 while ((req = blk_fetch_request(q)) != NULL) {
+ 		if (! blk_fs_request(req)) {
+ 			printk (KERN_NOTICE "Skip non-fs request\n");
+-			end_request(req, 0);
++			__blk_end_request_cur(req,-EIO);
+ 			continue;
+ 		}
+ 		sectors_xferred = sbull_xfer_request(dev, req);
+-		if (! end_that_request_first(req, 1, sectors_xferred)) {
+-			blkdev_dequeue_request(req);
+-			end_that_request_last(req);
+-		}
++		__blk_end_request_all(req, 0);
++//		if (! end_that_request_first(req, 1, sectors_xferred)) {
++//			blkdev_dequeue_request(req);
++//			end_that_request_last(req);
++//		}
+ 	}
+ }
+ 
+@@ -188,13 +190,13 @@
+ /*
+  * The direct make request version.
+  */
+-static int sbull_make_request(request_queue_t *q, struct bio *bio)
++static int sbull_make_request(struct request_queue *q, struct bio *bio)
+ {
+ 	struct sbull_dev *dev = q->queuedata;
+ 	int status;
+ 
+ 	status = sbull_xfer_bio(dev, bio);
+-	bio_endio(bio, bio->bi_size, status);
++	bio_endio(bio, status);
+ 	return 0;
+ }
+ 
+@@ -203,23 +205,22 @@
+  * Open and close.
+  */
+ 
+-static int sbull_open(struct inode *inode, struct file *filp)
++static int sbull_open(struct block_device *bdev, fmode_t mode)
+ {
+-	struct sbull_dev *dev = inode->i_bdev->bd_disk->private_data;
++	struct sbull_dev *dev = bdev->bd_disk->private_data;
+ 
+ 	del_timer_sync(&dev->timer);
+-	filp->private_data = dev;
+ 	spin_lock(&dev->lock);
+ 	if (! dev->users) 
+-		check_disk_change(inode->i_bdev);
++		 check_disk_change(bdev);
+ 	dev->users++;
+ 	spin_unlock(&dev->lock);
+ 	return 0;
+ }
+ 
+-static int sbull_release(struct inode *inode, struct file *filp)
++static int sbull_release(struct gendisk *gd, fmode_t mode)
+ {
+-	struct sbull_dev *dev = inode->i_bdev->bd_disk->private_data;
++	struct sbull_dev *dev = gd->private_data;
+ 
+ 	spin_lock(&dev->lock);
+ 	dev->users--;
+@@ -278,12 +279,12 @@
+  * The ioctl() implementation
+  */
+ 
+-int sbull_ioctl (struct inode *inode, struct file *filp,
++int sbull_ioctl (struct block_device *bdev, fmode_t mode, \
+                  unsigned int cmd, unsigned long arg)
+ {
+ 	long size;
+ 	struct hd_geometry geo;
+-	struct sbull_dev *dev = filp->private_data;
++	struct sbull_dev *dev = bdev->bd_disk->private_data;
+ 
+ 	switch(cmd) {
+ 	    case HDIO_GETGEO:
+@@ -317,7 +318,7 @@
+ 	.release 	 = sbull_release,
+ 	.media_changed   = sbull_media_changed,
+ 	.revalidate_disk = sbull_revalidate,
+-	.ioctl	         = sbull_ioctl
++	.ioctl = sbull_ioctl,
+ };
+ 
+ 
+@@ -373,7 +374,7 @@
+ 			goto out_vfree;
+ 		break;
+ 	}
+-	blk_queue_hardsect_size(dev->queue, hardsect_size);
++	blk_queue_logical_block_size(dev->queue, hardsect_size);
+ 	dev->queue->queuedata = dev;
+ 	/*
+ 	 * And the gendisk structure.
+@@ -440,9 +441,9 @@
+ 			put_disk(dev->gd);
+ 		}
+ 		if (dev->queue) {
+-			if (request_mode == RM_NOQUEUE)
+-				blk_put_queue(dev->queue);
+-			else
++			//if (request_mode == RM_NOQUEUE)
++			//	blk_put_queue(dev->queue);
++			//else
+ 				blk_cleanup_queue(dev->queue);
+ 		}
+ 		if (dev->data)
+Index: scull/access.c
+===================================================================
+--- scull/access.c	(revision 95)
++++ scull/access.c	(working copy)
+@@ -28,6 +28,7 @@
+ #include <linux/tty.h>
+ #include <asm/atomic.h>
+ #include <linux/list.h>
++#include <linux/sched.h>
+ 
+ #include "scull.h"        /* local definitions */
+ 
+@@ -103,8 +104,8 @@
+ 
+ 	spin_lock(&scull_u_lock);
+ 	if (scull_u_count && 
+-			(scull_u_owner != current->uid) &&  /* allow user */
+-			(scull_u_owner != current->euid) && /* allow whoever did su */
++			(scull_u_owner != current->cred->uid) &&  /* allow user */
++			(scull_u_owner != current->cred->euid) && /* allow whoever did su */
+ 			!capable(CAP_DAC_OVERRIDE)) { /* still allow root */
+ 		spin_unlock(&scull_u_lock);
+ 		return -EBUSY;   /* -EPERM would confuse the user */
+@@ -111,7 +112,7 @@
+ 	}
+ 
+ 	if (scull_u_count == 0)
+-		scull_u_owner = current->uid; /* grab it */
++		scull_u_owner = current->cred->uid; /* grab it */
+ 
+ 	scull_u_count++;
+ 	spin_unlock(&scull_u_lock);
+@@ -162,8 +163,8 @@
+ static inline int scull_w_available(void)
+ {
+ 	return scull_w_count == 0 ||
+-		scull_w_owner == current->uid ||
+-		scull_w_owner == current->euid ||
++		scull_w_owner == current->cred->uid ||
++		scull_w_owner == current->cred->euid ||
+ 		capable(CAP_DAC_OVERRIDE);
+ }
+ 
+@@ -181,7 +182,7 @@
+ 		spin_lock(&scull_w_lock);
+ 	}
+ 	if (scull_w_count == 0)
+-		scull_w_owner = current->uid; /* grab it */
++		scull_w_owner = current->cred->uid; /* grab it */
+ 	scull_w_count++;
+ 	spin_unlock(&scull_w_lock);
+ 
+Index: scull/main.c
+===================================================================
+--- scull/main.c	(revision 95)
++++ scull/main.c	(working copy)
+@@ -12,7 +12,7 @@
+  * e.g: ËÑË÷ "Tag000"
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ #include <linux/init.h>
+Index: scull/Makefile
+===================================================================
+--- scull/Makefile	(revision 95)
++++ scull/Makefile	(working copy)
+@@ -13,8 +13,8 @@
+   DEBFLAGS = -O2
+ endif
+ 
+-CFLAGS += $(DEBFLAGS)
+-CFLAGS += -I$(LDDINC)
++EXTRA_CFLAGS += $(DEBFLAGS)
++EXTRA_CFLAGS += -I$(LDDINC)
+ 
+ ifneq ($(KERNELRELEASE),)
+ # call from kernel build system
+@@ -39,7 +39,7 @@
+ 	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions
+ 
+ depend .depend dep:
+-	$(CC) $(CFLAGS) -M *.c > .depend
++	$(CC) $(EXTRA_CFLAGS) -M *.c > .depend
+ 
+ 
+ ifeq (.depend,$(wildcard .depend))
+Index: scull/pipe.c
+===================================================================
+--- scull/pipe.c	(revision 95)
++++ scull/pipe.c	(working copy)
+@@ -27,6 +27,7 @@
+ #include <linux/poll.h>
+ #include <linux/cdev.h>
+ #include <asm/uaccess.h>
++#include <linux/sched.h> 
+ 
+ #include "scull.h"		/* local definitions */
+ 
+Index: scull/scull.init
+===================================================================
+--- scull/scull.init	(revision 95)
++++ scull/scull.init	(working copy)
+@@ -88,10 +88,10 @@
+ # Load and create files
+ function load_device () {
+     
+-    if [ -f $MODDIR/$DEVICE.o ]; then
+-	devpath=$MODDIR/$DEVICE.o
+-    else if [ -f ./$DEVICE.o ]; then
+-	devpath=./$DEVICE.o
++    if [ -f $MODDIR/$DEVICE.ko ]; then
++	devpath=$MODDIR/$DEVICE.ko
++    else if [ -f ./$DEVICE.ko ]; then
++	devpath=./$DEVICE.ko
+     else
+ 	devpath=$DEVICE; # let insmod/modprobe guess
+     fi; fi
+@@ -131,7 +131,7 @@
+   force-reload|restart)
+      echo -n "Reloading $DEVICE"
+      unload_device
+-     load_device
++     # load_device
+      echo "."
+      ;;
+   *)
+Index: scullc/main.c
+===================================================================
+--- scullc/main.c	(revision 95)
++++ scullc/main.c	(working copy)
+@@ -49,7 +49,7 @@
+ void scullc_cleanup(void);
+ 
+ /* declare one cache pointer: use it for all devices */
+-kmem_cache_t *scullc_cache;
++struct kmem_cache *scullc_cache;
+ 
+ 
+ 
+@@ -407,14 +407,13 @@
+ /*
+  * "Complete" an asynchronous operation.
+  */
+-static void scullc_do_deferred_op(void *p)
++static void scullc_do_deferred_op(struct work_struct *p)
+ {
+-	struct async_work *stuff = (struct async_work *) p;
+-	aio_complete(stuff->iocb, stuff->result, 0);
+-	kfree(stuff);
++        struct async_work *stuff = container_of(p, struct async_work, work);
++        aio_complete(stuff->iocb, stuff->result, 0);
++        kfree(stuff);
+ }
+ 
+-
+ static int scullc_defer_op(int write, struct kiocb *iocb, char __user *buf,
+ 		size_t count, loff_t pos)
+ {
+@@ -437,7 +436,7 @@
+ 		return result; /* No memory, just complete now */
+ 	stuff->iocb = iocb;
+ 	stuff->result = result;
+-	INIT_WORK(&stuff->work, scullc_do_deferred_op, stuff);
++  INIT_WORK(&stuff->work, scullc_do_deferred_op);
+ 	schedule_delayed_work(&stuff->work, HZ/100);
+ 	return -EIOCBQUEUED;
+ }
+@@ -558,7 +557,7 @@
+ 	}
+ 
+ 	scullc_cache = kmem_cache_create("scullc", scullc_quantum,
+-			0, SLAB_HWCACHE_ALIGN, NULL, NULL); /* no ctor/dtor */
++			0, SLAB_HWCACHE_ALIGN, NULL); /* no ctor/dtor */
+ 	if (!scullc_cache) {
+ 		scullc_cleanup();
+ 		return -ENOMEM;
+Index: scullc/main.c.bak
+===================================================================
+--- scullc/main.c.bak	(revision 95)
++++ scullc/main.c.bak	(working copy)
+@@ -15,7 +15,7 @@
+  * $Id: _main.c.in,v 1.21 2004/10/14 20:11:39 corbet Exp $
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ #include <linux/init.h>
+@@ -49,7 +49,7 @@
+ void scullc_cleanup(void);
+ 
+ /* declare one cache pointer: use it for all devices */
+-kmem_cache_t *scullc_cache;
++struct kmem_cache *scullc_cache;
+ 
+ 
+ 
+@@ -407,14 +407,13 @@
+ /*
+  * "Complete" an asynchronous operation.
+  */
+-static void scullc_do_deferred_op(void *p)
++static void scullc_do_deferred_op(struct work_struct *p)
+ {
+-	struct async_work *stuff = (struct async_work *) p;
+-	aio_complete(stuff->iocb, stuff->result, 0);
+-	kfree(stuff);
++        struct async_work *stuff = container_of(p, struct async_work, work);
++        aio_complete(stuff->iocb, stuff->result, 0);
++        kfree(stuff);
+ }
+ 
+-
+ static int scullc_defer_op(int write, struct kiocb *iocb, char __user *buf,
+ 		size_t count, loff_t pos)
+ {
+@@ -437,7 +436,7 @@
+ 		return result; /* No memory, just complete now */
+ 	stuff->iocb = iocb;
+ 	stuff->result = result;
+-	INIT_WORK(&stuff->work, scullc_do_deferred_op, stuff);
++  INIT_WORK(&stuff->work, scullc_do_deferred_op);
+ 	schedule_delayed_work(&stuff->work, HZ/100);
+ 	return -EIOCBQUEUED;
+ }
+Index: scullc/Makefile.bak
+===================================================================
+--- scullc/Makefile.bak	(revision 95)
++++ scullc/Makefile.bak	(working copy)
+@@ -9,7 +9,7 @@
+   DEBFLAGS = -O2
+ endif
+ 
+-EXTRA_CFLAGS += $(DEBFLAGS) -I$(LDDINC)
++CFLAGS += $(DEBFLAGS) -I$(LDDINC)
+ 
+ TARGET = scullc
+ 
+Index: sculld/main.c
+===================================================================
+--- sculld/main.c	(revision 95)
++++ sculld/main.c	(working copy)
+@@ -15,7 +15,7 @@
+  * $Id: _main.c.in,v 1.21 2004/10/14 20:11:39 corbet Exp $
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ #include <linux/init.h>
+@@ -27,6 +27,7 @@
+ #include <linux/proc_fs.h>
+ #include <linux/fcntl.h>	/* O_ACCMODE */
+ #include <linux/aio.h>
++#include <linux/device.h>
+ #include <asm/uaccess.h>
+ #include "sculld.h"		/* local definitions */
+ 
+@@ -409,22 +410,21 @@
+ struct async_work {
+ 	struct kiocb *iocb;
+ 	int result;
+-	struct work_struct work;
++	struct delayed_work dwork;
+ };
+ 
+ /*
+  * "Complete" an asynchronous operation.
+  */
+-static void sculld_do_deferred_op(void *p)
++static void sculld_do_deferred_op(struct work_struct *work)
+ {
+-	struct async_work *stuff = (struct async_work *) p;
++	struct async_work *stuff = container_of(work, struct async_work, dwork.work); /*Long*/
+ 	aio_complete(stuff->iocb, stuff->result, 0);
+ 	kfree(stuff);
+ }
+ 
+ 
+-static int sculld_defer_op(int write, struct kiocb *iocb, char __user *buf,
+-		size_t count, loff_t pos)
++static int sculld_defer_op(int write, struct kiocb *iocb, const struct iovec * iov, size_t count, loff_t pos)
+ {
+ 	struct async_work *stuff;
+ 	int result;
+@@ -431,9 +431,9 @@
+ 
+ 	/* Copy now while we can access the buffer */
+ 	if (write)
+-		result = sculld_write(iocb->ki_filp, buf, count, &pos);
++		result = sculld_write(iocb->ki_filp, iov->iov_base, iov->iov_len, &pos);
+ 	else
+-		result = sculld_read(iocb->ki_filp, buf, count, &pos);
++		 result = sculld_read(iocb->ki_filp, iov->iov_base, iov->iov_len, &pos);
+ 
+ 	/* If this is a synchronous IOCB, we return our status now. */
+ 	if (is_sync_kiocb(iocb))
+@@ -445,22 +445,21 @@
+ 		return result; /* No memory, just complete now */
+ 	stuff->iocb = iocb;
+ 	stuff->result = result;
+-	INIT_WORK(&stuff->work, sculld_do_deferred_op, stuff);
+-	schedule_delayed_work(&stuff->work, HZ/100);
++	INIT_DELAYED_WORK(&stuff->dwork, sculld_do_deferred_op);/* add by Long*/
++	schedule_delayed_work(&stuff->dwork, HZ/100);/* add by Long*/
+ 	return -EIOCBQUEUED;
+ }
+ 
+ 
+-static ssize_t sculld_aio_read(struct kiocb *iocb, char __user *buf, size_t count,
+-		loff_t pos)
++static ssize_t sculld_aio_read(struct kiocb *iocb, const struct iovec *iov, size_t count, loff_t pos)
+ {
+-	return sculld_defer_op(0, iocb, buf, count, pos);
++	return sculld_defer_op(0, iocb, iov, count, pos);
+ }
+ 
+-static ssize_t sculld_aio_write(struct kiocb *iocb, const char __user *buf,
++static ssize_t sculld_aio_write(struct kiocb *iocb, const struct iovec *iov,
+ 		size_t count, loff_t pos)
+ {
+-	return sculld_defer_op(1, iocb, (char __user *) buf, count, pos);
++	return sculld_defer_op(1, iocb, iov, count, pos);
+ }
+ 
+ 
+@@ -532,23 +531,25 @@
+ 		printk(KERN_NOTICE "Error %d adding scull%d", err, index);
+ }
+ 
+-static ssize_t sculld_show_dev(struct device *ddev, char *buf)
++static ssize_t sculld_show_dev(struct device *dev, struct device_attribute *dattr, char *buf)
+ {
+-	struct sculld_dev *dev = ddev->driver_data;
++	struct sculld_dev *sdev = container_of(dev, struct sculld_dev, ldev.dev);
+ 
+-	return print_dev_t(buf, dev->cdev.dev);
++	return print_dev_t(buf, sdev->cdev.dev);
+ }
+ 
+-static DEVICE_ATTR(dev, S_IRUGO, sculld_show_dev, NULL);
++static DEVICE_ATTR(sculld, 0644, sculld_show_dev, NULL);
+ 
+ static void sculld_register_dev(struct sculld_dev *dev, int index)
+ {
++	int err;
+ 	sprintf(dev->devname, "sculld%d", index);
+ 	dev->ldev.name = dev->devname;
+ 	dev->ldev.driver = &sculld_driver;
+-	dev->ldev.dev.driver_data = dev;
+ 	register_ldd_device(&dev->ldev);
+-	device_create_file(&dev->ldev.dev, &dev_attr_dev);
++	err = device_create_file(&dev->ldev.dev, &dev_attr_sculld);
++	if (err) 
++		printk(KERN_NOTICE "Error %d register_dev scull%d", err, index);
+ }
+ 
+ 
+Index: sculld/Makefile
+===================================================================
+--- sculld/Makefile	(revision 95)
++++ sculld/Makefile	(working copy)
+@@ -9,7 +9,7 @@
+   DEBFLAGS = -O2
+ endif
+ 
+-CFLAGS += $(DEBFLAGS) -I$(LDDINC)
++EXTRA_CFLAGS += $(DEBFLAGS) -I$(LDDINC)
+ 
+ TARGET = sculld
+ 
+@@ -39,7 +39,7 @@
+ 
+ 
+ depend .depend dep:
+-	$(CC) $(CFLAGS) -M *.c > .depend
++	$(CC) $(EXTRA_CFLAGS) -M *.c > .depend
+ 
+ ifeq (.depend,$(wildcard .depend))
+ include .depend
+Index: sculld/mmap.c
+===================================================================
+--- sculld/mmap.c	(revision 95)
++++ sculld/mmap.c	(working copy)
+@@ -15,10 +15,11 @@
+  * $Id: _mmap.c.in,v 1.13 2004/10/18 18:07:36 corbet Exp $
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ 
+ #include <linux/mm.h>		/* everything */
++#include <linux/fs.h>
+ #include <linux/errno.h>	/* error codes */
+ #include <asm/pgtable.h>
+ 
+@@ -57,38 +58,42 @@
+  * is individually decreased, and would drop to 0.
+  */
+ 
+-struct page *sculld_vma_nopage(struct vm_area_struct *vma,
+-                                unsigned long address, int *type)
++ int sculld_vma_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+ {
+-	unsigned long offset;
+ 	struct sculld_dev *ptr, *dev = vma->vm_private_data;
+-	struct page *page = NOPAGE_SIGBUS;
+-	void *pageptr = NULL; /* default to "missing" */
+-
++	struct page *pageptr = NULL; /* default to "missing" */
++	unsigned long physaddr;
++	unsigned long pageframe;
++	
+ 	down(&dev->sem);
+-	offset = (address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT);
+-	if (offset >= dev->size) goto out; /* out of range */
+-
++	physaddr = (unsigned long)((vmf->virtual_address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT));
++  if (physaddr >= dev->size) { 
++  up(&dev->sem);
++  return VM_FAULT_NOPAGE;
++  } /* out of range */
++  
+ 	/*
+ 	 * Now retrieve the sculld device from the list,then the page.
+ 	 * If the device has holes, the process receives a SIGBUS when
+ 	 * accessing the hole.
+ 	 */
+-	offset >>= PAGE_SHIFT; /* offset is a number of pages */
+-	for (ptr = dev; ptr && offset >= dev->qset;) {
+-		ptr = ptr->next;
+-		offset -= dev->qset;
++  pageframe = physaddr >> PAGE_SHIFT; /* offset is a number of pages */
++  for (ptr = dev; ptr && pageframe >= dev->qset;) {		ptr = ptr->next;
++    ptr = ptr->next;
++		pageframe -= dev->qset;
+ 	}
+-	if (ptr && ptr->data) pageptr = ptr->data[offset];
+-	if (!pageptr) goto out; /* hole or end-of-file */
++  if (ptr && ptr->data) pageptr = ptr->data[pageframe];
++  if (!pageptr) { 
++  up(&dev->sem);
++  return VM_FAULT_NOPAGE;
++  } /* hole or end-of-file */
++  pageptr = pfn_to_page(pageframe);
+ 
+ 	/* got it, now increment the count */
+-	get_page(page);
+-	if (type)
+-		*type = VM_FAULT_MINOR;
+-  out:
++	get_page(pageptr);
++  vmf->page = pageptr;
+ 	up(&dev->sem);
+-	return page;
++	return 0;
+ }
+ 
+ 
+@@ -96,13 +101,13 @@
+ struct vm_operations_struct sculld_vm_ops = {
+ 	.open =     sculld_vma_open,
+ 	.close =    sculld_vma_close,
+-	.nopage =   sculld_vma_nopage,
++	.fault = sculld_vma_fault,
+ };
+ 
+ 
+ int sculld_mmap(struct file *filp, struct vm_area_struct *vma)
+ {
+-	struct inode *inode = filp->f_dentry->d_inode;
++	struct inode *inode = vma->vm_file->f_path.dentry->d_inode;
+ 
+ 	/* refuse to map if order is not 0 */
+ 	if (sculld_devices[iminor(inode)].order)
+Index: scullp/main.c
+===================================================================
+--- scullp/main.c	(revision 95)
++++ scullp/main.c	(working copy)
+@@ -15,7 +15,7 @@
+  * $Id: _main.c.in,v 1.21 2004/10/14 20:11:39 corbet Exp $
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ #include <linux/init.h>
+@@ -400,15 +400,15 @@
+ struct async_work {
+ 	struct kiocb *iocb;
+ 	int result;
+-	struct work_struct work;
++	struct delayed_work dwork;
+ };
+ 
+ /*
+  * "Complete" an asynchronous operation.
+  */
+-static void scullp_do_deferred_op(void *p)
++static void scullp_do_deferred_op(struct work_struct *work)
+ {
+-	struct async_work *stuff = (struct async_work *) p;
++  struct async_work *stuff = container_of(work, struct async_work, dwork.work);
+ 	aio_complete(stuff->iocb, stuff->result, 0);
+ 	kfree(stuff);
+ }
+@@ -436,22 +436,20 @@
+ 		return result; /* No memory, just complete now */
+ 	stuff->iocb = iocb;
+ 	stuff->result = result;
+-	INIT_WORK(&stuff->work, scullp_do_deferred_op, stuff);
+-	schedule_delayed_work(&stuff->work, HZ/100);
++	INIT_DELAYED_WORK(&stuff->dwork, scullp_do_deferred_op);
++	schedule_delayed_work(&stuff->dwork, HZ/100);
+ 	return -EIOCBQUEUED;
+ }
+ 
+ 
+-static ssize_t scullp_aio_read(struct kiocb *iocb, char __user *buf, size_t count,
+-		loff_t pos)
++static ssize_t scullp_aio_read(struct kiocb *iocb, const struct iovec * iov, unsigned long count, loff_t pos)
+ {
+-	return scullp_defer_op(0, iocb, buf, count, pos);
++	return scullp_defer_op(0, iocb, iov->iov_base, count, pos);
+ }
+ 
+-static ssize_t scullp_aio_write(struct kiocb *iocb, const char __user *buf,
+-		size_t count, loff_t pos)
++static ssize_t scullp_aio_write(struct kiocb *iocb, const struct iovec * iov, unsigned long count, loff_t pos)
+ {
+-	return scullp_defer_op(1, iocb, (char __user *) buf, count, pos);
++	return scullp_defer_op(1, iocb, iov->iov_base, count, pos);
+ }
+ 
+ 
+Index: scullp/Makefile
+===================================================================
+--- scullp/Makefile	(revision 95)
++++ scullp/Makefile	(working copy)
+@@ -9,7 +9,7 @@
+   DEBFLAGS = -O2
+ endif
+ 
+-CFLAGS += $(DEBFLAGS) -I$(LDDINC)
++EXTRA_CFLAGS += $(DEBFLAGS) -I$(LDDINC)
+ 
+ TARGET = scullp
+ 
+@@ -35,11 +35,11 @@
+ 	install -c $(TARGET).o $(INSTALLDIR)
+ 
+ clean:
+-	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions
++	 rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions
+ 
+ 
+ depend .depend dep:
+-	$(CC) $(CFLAGS) -M *.c > .depend
++	$(CC) $(EXTRA_CFLAGS) -M *.c > .depend
+ 
+ ifeq (.depend,$(wildcard .depend))
+ include .depend
+Index: scullp/mmap.c
+===================================================================
+--- scullp/mmap.c	(revision 95)
++++ scullp/mmap.c	(working copy)
+@@ -15,10 +15,12 @@
+  * $Id: _mmap.c.in,v 1.13 2004/10/18 18:07:36 corbet Exp $
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ 
+ #include <linux/mm.h>		/* everything */
++#include <linux/fs.h>
++#include <linux/path.h>
+ #include <linux/errno.h>	/* error codes */
+ #include <asm/pgtable.h>
+ 
+@@ -57,18 +59,20 @@
+  * is individually decreased, and would drop to 0.
+  */
+ 
+-struct page *scullp_vma_nopage(struct vm_area_struct *vma,
+-                                unsigned long address, int *type)
++ int scullp_vma_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+ {
+ 	unsigned long offset;
+ 	struct scullp_dev *ptr, *dev = vma->vm_private_data;
+-	struct page *page = NOPAGE_SIGBUS;
++	struct page *page;
+ 	void *pageptr = NULL; /* default to "missing" */
+ 
+ 	down(&dev->sem);
+-	offset = (address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT);
+-	if (offset >= dev->size) goto out; /* out of range */
+-
++  offset = (unsigned long)(vmf->virtual_address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT);
++  if (offset >= dev->size) {
++  up(&dev->sem);
++  return VM_FAULT_SIGBUS;
++  } /* out of range */
++  
+ 	/*
+ 	 * Now retrieve the scullp device from the list,then the page.
+ 	 * If the device has holes, the process receives a SIGBUS when
+@@ -80,16 +84,17 @@
+ 		offset -= dev->qset;
+ 	}
+ 	if (ptr && ptr->data) pageptr = ptr->data[offset];
+-	if (!pageptr) goto out; /* hole or end-of-file */
++	if (!pageptr) {
++  up(&dev->sem);
++  return VM_FAULT_SIGBUS;
++  } /* hole or end-of-file */
+ 	page = virt_to_page(pageptr);
+ 
+ 	/* got it, now increment the count */
+ 	get_page(page);
+-	if (type)
+-		*type = VM_FAULT_MINOR;
+-  out:
++	vmf->page = page;
+ 	up(&dev->sem);
+-	return page;
++	return 0;
+ }
+ 
+ 
+@@ -97,13 +102,13 @@
+ struct vm_operations_struct scullp_vm_ops = {
+ 	.open =     scullp_vma_open,
+ 	.close =    scullp_vma_close,
+-	.nopage =   scullp_vma_nopage,
++	.fault = scullp_vma_fault,
+ };
+ 
+ 
+ int scullp_mmap(struct file *filp, struct vm_area_struct *vma)
+ {
+-	struct inode *inode = filp->f_dentry->d_inode;
++	struct inode *inode = filp->f_path.dentry->d_inode;
+ 
+ 	/* refuse to map if order is not 0 */
+ 	if (scullp_devices[iminor(inode)].order)
+Index: scullv/main.c
+===================================================================
+--- scullv/main.c	(revision 95)
++++ scullv/main.c	(working copy)
+@@ -15,7 +15,7 @@
+  * $Id: _main.c.in,v 1.21 2004/10/14 20:11:39 corbet Exp $
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ #include <linux/init.h>
+@@ -400,15 +400,15 @@
+ struct async_work {
+ 	struct kiocb *iocb;
+ 	int result;
+-	struct work_struct work;
++	struct delayed_work dwork;
+ };
+ 
+ /*
+  * "Complete" an asynchronous operation.
+  */
+-static void scullv_do_deferred_op(void *p)
++static void scullv_do_deferred_op(struct work_struct *work)
+ {
+-	struct async_work *stuff = (struct async_work *) p;
++	struct async_work *stuff = container_of(work, struct async_work, dwork.work);
+ 	aio_complete(stuff->iocb, stuff->result, 0);
+ 	kfree(stuff);
+ }
+@@ -436,22 +436,20 @@
+ 		return result; /* No memory, just complete now */
+ 	stuff->iocb = iocb;
+ 	stuff->result = result;
+-	INIT_WORK(&stuff->work, scullv_do_deferred_op, stuff);
+-	schedule_delayed_work(&stuff->work, HZ/100);
++	INIT_DELAYED_WORK(&stuff->dwork, scullv_do_deferred_op);
++	schedule_delayed_work(&stuff->dwork, HZ/100);
+ 	return -EIOCBQUEUED;
+ }
+ 
+ 
+-static ssize_t scullv_aio_read(struct kiocb *iocb, char __user *buf, size_t count,
+-		loff_t pos)
++static ssize_t scullv_aio_read(struct kiocb *iocb, const struct iovec *iov, unsigned long count, loff_t pos)
+ {
+-	return scullv_defer_op(0, iocb, buf, count, pos);
++	return scullv_defer_op(0, iocb, iov->iov_base, count, pos);
+ }
+ 
+-static ssize_t scullv_aio_write(struct kiocb *iocb, const char __user *buf,
+-		size_t count, loff_t pos)
++static ssize_t scullv_aio_write(struct kiocb *iocb, const struct iovec *iov, unsigned long count, loff_t pos)
+ {
+-	return scullv_defer_op(1, iocb, (char __user *) buf, count, pos);
++	return scullv_defer_op(1, iocb, iov->iov_base, count, pos);
+ }
+ 
+ 
+Index: scullv/Makefile
+===================================================================
+--- scullv/Makefile	(revision 95)
++++ scullv/Makefile	(working copy)
+@@ -9,7 +9,7 @@
+   DEBFLAGS = -O2
+ endif
+ 
+-CFLAGS += $(DEBFLAGS) -I$(LDDINC)
++EXTRA_CFLAGS += $(DEBFLAGS) -I$(LDDINC)
+ 
+ TARGET = scullv
+ 
+@@ -35,11 +35,11 @@
+ 	install -c $(TARGET).o $(INSTALLDIR)
+ 
+ clean:
+-	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions
++	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions *.markers *.order *.symvers
+ 
+ 
+ depend .depend dep:
+-	$(CC) $(CFLAGS) -M *.c > .depend
++	$(CC) $(EXTRA_CFLAGS) -M *.c > .depend
+ 
+ ifeq (.depend,$(wildcard .depend))
+ include .depend
+Index: scullv/mmap.c
+===================================================================
+--- scullv/mmap.c	(revision 95)
++++ scullv/mmap.c	(working copy)
+@@ -15,10 +15,11 @@
+  * $Id: _mmap.c.in,v 1.13 2004/10/18 18:07:36 corbet Exp $
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+-
++#include <linux/semaphore.h>
+ #include <linux/mm.h>		/* everything */
++#include <linux/fs.h>
+ #include <linux/errno.h>	/* error codes */
+ #include <asm/pgtable.h>
+ 
+@@ -57,17 +58,19 @@
+  * is individually decreased, and would drop to 0.
+  */
+ 
+-struct page *scullv_vma_nopage(struct vm_area_struct *vma,
+-                                unsigned long address, int *type)
++int scullv_vma_fault(struct vm_area_struct *vma,struct vm_fault *vmf)
+ {
+ 	unsigned long offset;
+ 	struct scullv_dev *ptr, *dev = vma->vm_private_data;
+-	struct page *page = NOPAGE_SIGBUS;
++	struct page *page;
+ 	void *pageptr = NULL; /* default to "missing" */
+ 
+ 	down(&dev->sem);
+-	offset = (address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT);
+-	if (offset >= dev->size) goto out; /* out of range */
++  offset = (unsigned long) (vmf->virtual_address - vma->vm_start) + (vma->vm_pgoff << PAGE_SHIFT);
++  if (offset >= dev->size) { 
++  up(&dev->sem);
++  return VM_FAULT_SIGBUS;
++  } /* out of range */
+ 
+ 	/*
+ 	 * Now retrieve the scullv device from the list,then the page.
+@@ -80,8 +83,11 @@
+ 		offset -= dev->qset;
+ 	}
+ 	if (ptr && ptr->data) pageptr = ptr->data[offset];
+-	if (!pageptr) goto out; /* hole or end-of-file */
+-
++  if (!pageptr) { 
++  up(&dev->sem);
++  return VM_FAULT_SIGBUS;
++  } /* hole or end-of-file */
++  
+ 	/*
+ 	 * After scullv lookup, "page" is now the address of the page
+ 	 * needed by the current process. Since it's a vmalloc address,
+@@ -91,11 +97,9 @@
+ 
+ 	/* got it, now increment the count */
+ 	get_page(page);
+-	if (type)
+-		*type = VM_FAULT_MINOR;
+-  out:
++	vmf->page = page;
+ 	up(&dev->sem);
+-	return page;
++	return 0;
+ }
+ 
+ 
+@@ -103,7 +107,7 @@
+ struct vm_operations_struct scullv_vm_ops = {
+ 	.open =     scullv_vma_open,
+ 	.close =    scullv_vma_close,
+-	.nopage =   scullv_vma_nopage,
++	.fault = scullv_vma_fault,
+ };
+ 
+ 
+@@ -113,7 +117,7 @@
+ 	/* don't do anything here: "nopage" will set up page table entries */
+ 	vma->vm_ops = &scullv_vm_ops;
+ 	vma->vm_flags |= VM_RESERVED;
+-	vma->vm_private_data = filp->private_data;
++	vma->vm_file->private_data = filp->private_data;
+ 	scullv_vma_open(vma);
+ 	return 0;
+ }
+Index: short/Makefile
+===================================================================
+--- short/Makefile	(revision 95)
++++ short/Makefile	(working copy)
+@@ -9,8 +9,8 @@
+   DEBFLAGS = -O2
+ endif
+ 
+-CFLAGS += $(DEBFLAGS)
+-CFLAGS += -I..
++EXTRA_CFLAGS += $(DEBFLAGS)
++EXTRA_CFLAGS += -I..
+ 
+ ifneq ($(KERNELRELEASE),)
+ # call from kernel build system
+@@ -29,10 +29,10 @@
+ 
+ 
+ clean:
+-	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions
++	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions *.markers *.order *.symvers
+ 
+ depend .depend dep:
+-	$(CC) $(CFLAGS) -M *.c > .depend
++	$(CC) $(EXTRA_CFLAGS) -M *.c > .depend
+ 
+ 
+ ifeq (.depend,$(wildcard .depend))
+Index: short/short.c
+===================================================================
+--- short/short.c	(revision 95)
++++ short/short.c	(working copy)
+@@ -21,7 +21,7 @@
+  * writers.
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ #include <linux/init.h>
+@@ -333,7 +333,7 @@
+ 	.release = short_release,
+ };
+ 
+-irqreturn_t short_interrupt(int irq, void *dev_id, struct pt_regs *regs)
++irqreturn_t short_interrupt(int irq, void *dev_id)
+ {
+ 	struct timeval tv;
+ 	int written;
+@@ -409,8 +409,12 @@
+ 	wake_up_interruptible(&short_queue); /* awake any reading process */
+ }
+ 
++void short_do_work (struct work_struct * work)
++{
++short_do_tasklet(0);
++}
+ 
+-irqreturn_t short_wq_interrupt(int irq, void *dev_id, struct pt_regs *regs)
++irqreturn_t short_wq_interrupt(int irq, void *dev_id)
+ {
+ 	/* Grab the current time information. */
+ 	do_gettimeofday((struct timeval *) tv_head);
+@@ -428,7 +432,7 @@
+  * Tasklet top half
+  */
+ 
+-irqreturn_t short_tl_interrupt(int irq, void *dev_id, struct pt_regs *regs)
++irqreturn_t short_tl_interrupt(int irq, void *dev_id)
+ {
+ 	do_gettimeofday((struct timeval *) tv_head); /* cast to stop 'volatile' warning */
+ 	short_incr_tv(&tv_head);
+@@ -440,7 +444,7 @@
+ 
+ 
+ 
+-irqreturn_t short_sh_interrupt(int irq, void *dev_id, struct pt_regs *regs)
++irqreturn_t short_sh_interrupt(int irq, void *dev_id)
+ {
+ 	int value, written;
+ 	struct timeval tv;
+@@ -491,7 +495,7 @@
+ 		printk("short: probe failed %i times, giving up\n", count);
+ }
+ 
+-irqreturn_t short_probing(int irq, void *dev_id, struct pt_regs *regs)
++irqreturn_t short_probing(int irq, void *dev_id)
+ {
+ 	if (short_irq == 0) short_irq = irq;	/* found */
+ 	if (short_irq != irq) short_irq = -irq; /* ambiguous */
+@@ -511,7 +515,7 @@
+       */
+ 	for (i = 0; trials[i]; i++)
+ 		tried[i] = request_irq(trials[i], short_probing,
+-				SA_INTERRUPT, "short probe", NULL);
++				IRQF_SHARED, "short probe", NULL);
+ 
+ 	do {
+ 		short_irq = 0; /* none got, yet */
+@@ -594,7 +598,7 @@
+ 	 * (unused) argument.
+ 	 */
+ 	/* this line is in short_init() */
+-	INIT_WORK(&short_wq, (void (*)(void *)) short_do_tasklet, NULL);
++	INIT_WORK(&short_wq, short_do_work);
+ 
+ 	/*
+ 	 * Now we deal with the interrupt: either kernel-based
+@@ -621,7 +625,7 @@
+ 	 */
+ 	if (short_irq >= 0 && share > 0) {
+ 		result = request_irq(short_irq, short_sh_interrupt,
+-				SA_SHIRQ | SA_INTERRUPT,"short",
++				IRQF_SHARED | IRQF_PERCPU,"short",
+ 				short_sh_interrupt);
+ 		if (result) {
+ 			printk(KERN_INFO "short: can't get assigned irq %i\n", short_irq);
+@@ -635,7 +639,7 @@
+ 
+ 	if (short_irq >= 0) {
+ 		result = request_irq(short_irq, short_interrupt,
+-				SA_INTERRUPT, "short", NULL);
++				IRQF_SHARED, "short", NULL);
+ 		if (result) {
+ 			printk(KERN_INFO "short: can't get assigned irq %i\n",
+ 					short_irq);
+@@ -655,7 +659,7 @@
+ 		result = request_irq(short_irq,
+ 				tasklet ? short_tl_interrupt :
+ 				short_wq_interrupt,
+-				SA_INTERRUPT,"short-bh", NULL);
++				IRQF_SHARED,"short-bh", NULL);
+ 		if (result) {
+ 			printk(KERN_INFO "short-bh: can't get assigned irq %i\n",
+ 					short_irq);
+Index: shortprint/Makefile
+===================================================================
+--- shortprint/Makefile	(revision 95)
++++ shortprint/Makefile	(working copy)
+@@ -1,7 +1,7 @@
+ # Comment/uncomment the following line to disable/enable debugging
+ #DEBUG = y
+ 
+-CFLAGS += -O2 -I..
++EXTRA_CFLAGS += -O2 -I..
+ 
+ ifneq ($(KERNELRELEASE),)
+ # call from kernel build system
+@@ -20,10 +20,10 @@
+ 
+ 
+ clean:
+-	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions
++	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions *.markers *.order *.symvers
+ 
+ depend .depend dep:
+-	$(CC) $(CFLAGS) -M *.c > .depend
++	$(CC) $(EXTRA_CFLAGS) -M *.c > .depend
+ 
+ 
+ ifeq (.depend,$(wildcard .depend))
+Index: shortprint/shortprint.c
+===================================================================
+--- shortprint/shortprint.c	(revision 95)
++++ shortprint/shortprint.c	(working copy)
+@@ -15,7 +15,7 @@
+  *
+  * $Id: shortprint.c,v 1.4 2004/09/26 08:01:04 gregkh Exp $
+  */
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ 
+@@ -32,7 +32,7 @@
+ #include <linux/poll.h>
+ 
+ #include <asm/io.h>
+-#include <asm/semaphore.h>
++#include <linux/semaphore.h>
+ #include <asm/atomic.h>
+ 
+ #include "shortprint.h"
+@@ -108,8 +108,8 @@
+  * Feeding the output queue to the device is handled by way of a
+  * workqueue.
+  */
+-static void shortp_do_work(void *);
+-static DECLARE_WORK(shortp_work, shortp_do_work, NULL);
++static void shortp_do_work(struct work_struct *work);
++static DECLARE_WORK(shortp_work, shortp_do_work);
+ static struct workqueue_struct *shortp_workqueue;
+ 
+ /*
+@@ -322,7 +322,7 @@
+  */
+ 
+ 
+-static void shortp_do_work(void *unused)
++static void shortp_do_work(struct work_struct *work)
+ {
+ 	int written;
+ 	unsigned long flags;
+@@ -360,7 +360,7 @@
+ /*
+  * The top-half interrupt handler.
+  */
+-static irqreturn_t shortp_interrupt(int irq, void *dev_id, struct pt_regs *regs)
++static irqreturn_t shortp_interrupt(int irq, void *dev_id)
+ {
+ 	if (! shortp_output_active) 
+ 		return IRQ_NONE;
+@@ -396,7 +396,7 @@
+ 
+ 	/* Otherwise we must have dropped an interrupt. */
+ 	spin_unlock_irqrestore(&shortp_out_lock, flags);
+-	shortp_interrupt(shortp_irq, NULL, NULL);
++	shortp_interrupt(shortp_irq, NULL);
+ }
+     
+ 
+Index: simple/Makefile
+===================================================================
+--- simple/Makefile	(revision 95)
++++ simple/Makefile	(working copy)
+@@ -8,7 +8,7 @@
+   DEBFLAGS = -O2
+ endif
+ 
+-CFLAGS += $(DEBFLAGS) -I$(LDDINCDIR)
++EXTRA_CFLAGS += $(DEBFLAGS) -I$(LDDINCDIR)
+ 
+ ifneq ($(KERNELRELEASE),)
+ # call from kernel build system
+@@ -28,10 +28,10 @@
+ 
+ 
+ clean:
+-	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions
++	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions *.markers *.order *.symvers
+ 
+ depend .depend dep:
+-	$(CC) $(CFLAGS) -M *.c > .depend
++	$(CC) $(EXTRA_CFLAGS) -M *.c > .depend
+ 
+ 
+ ifeq (.depend,$(wildcard .depend))
+Index: simple/simple.c
+===================================================================
+--- simple/simple.c	(revision 95)
++++ simple/simple.c	(working copy)
+@@ -15,7 +15,7 @@
+  * $Id: simple.c,v 1.12 2005/01/31 16:15:31 rubini Exp $
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/moduleparam.h>
+ #include <linux/init.h>
+@@ -99,12 +99,11 @@
+ /*
+  * The nopage version.
+  */
+-struct page *simple_vma_nopage(struct vm_area_struct *vma,
+-                unsigned long address, int *type)
++int simple_vma_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+ {
+ 	struct page *pageptr;
+ 	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
+-	unsigned long physaddr = address - vma->vm_start + offset;
++	unsigned long physaddr = (unsigned long)(vmf->virtual_address - vma->vm_start + offset);
+ 	unsigned long pageframe = physaddr >> PAGE_SHIFT;
+ 
+ // Eventually remove these printks
+@@ -112,20 +111,21 @@
+ 	printk (KERN_NOTICE "VA is %p\n", __va (physaddr));
+ 	printk (KERN_NOTICE "Page at %p\n", virt_to_page (__va (physaddr)));
+ 	if (!pfn_valid(pageframe))
+-		return NOPAGE_SIGBUS;
++		return VM_FAULT_SIGBUS;
+ 	pageptr = pfn_to_page(pageframe);
+ 	printk (KERN_NOTICE "page->index = %ld mapping %p\n", pageptr->index, pageptr->mapping);
+ 	printk (KERN_NOTICE "Page frame %ld\n", pageframe);
+ 	get_page(pageptr);
+-	if (type)
+-		*type = VM_FAULT_MINOR;
+-	return pageptr;
++	if(pageptr == NULL) 
++  return VM_FAULT_NOPAGE;
++  vmf->page = pageptr;
++  return 0;
+ }
+ 
+ static struct vm_operations_struct simple_nopage_vm_ops = {
+ 	.open =   simple_vma_open,
+ 	.close =  simple_vma_close,
+-	.nopage = simple_vma_nopage,
++	.fault = simple_vma_fault,
+ };
+ 
+ static int simple_nopage_mmap(struct file *filp, struct vm_area_struct *vma)
+Index: skull/Makefile
+===================================================================
+--- skull/Makefile	(revision 95)
++++ skull/Makefile	(working copy)
+@@ -1 +1,41 @@
+-foo:
++# Comment/uncomment the following line to disable/enable debugging
++#DEBUG = y
++
++
++# Add your debugging flag (or not) to CFLAGS
++ifeq ($(DEBUG),y)
++DEBFLAGS = -O -g -DSCULL_DEBUG # "-O" is needed to expand inlines
++else
++DEBFLAGS = -O2
++endif
++
++EXTRA_CFLAGS += $(DEBFLAGS)
++EXTRA_CFLAGS += -I..
++
++ifneq ($(KERNELRELEASE),)
++# call from kernel build system
++
++obj-m := skull_clean.o skull_init.o
++
++else
++
++KERNELDIR ?= /lib/modules/$(shell uname -r)/build
++PWD := $(shell pwd)
++
++default:
++	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
++
++endif
++
++
++
++clean:
++	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions *.markers *.order *.symvers
++
++depend .depend dep:
++	$(CC) $(EXTRA_CFLAGS) -M *.c > .depend
++
++
++ifeq (.depend,$(wildcard .depend))
++include .depend
++endif
+\ No newline at end of file
+Index: skull/skull_clean.c
+===================================================================
+--- skull/skull_clean.c	(revision 95)
++++ skull/skull_clean.c	(working copy)
+@@ -1,4 +1,4 @@
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/version.h>
+ 
+Index: skull/skull_init.c
+===================================================================
+--- skull/skull_init.c	(revision 95)
++++ skull/skull_init.c	(working copy)
+@@ -20,7 +20,7 @@
+ 
+ /* jc: cleaned up, but not yet run for anything */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/init.h>
+ #include <linux/moduleparam.h>
+@@ -45,8 +45,8 @@
+ EXPORT_SYMBOL (skull_fn1);
+ EXPORT_SYMBOL (skull_fn2);
+ EXPORT_SYMBOL (skull_variable);
++MODULE_LICENSE("GPL");
+ 
+-
+ /* perform hardware autodetection */
+ int skull_probe_hw(unsigned int port, unsigned int range)
+ {
+@@ -138,14 +138,14 @@
+ 	/*
+ 	 * Read and write the beginning of the region and see what happens.
+ 	 */
+-	save_flags(flags); 
+-	cli();
++  local_irq_save(flags); 
++  local_irq_disable();
+ 	oldval = readb (base + add);  /* Read a byte */
+ 	writeb (oldval^0xff, base + add);
+ 	mb();
+ 	newval = readb (base + add);
+ 	writeb (oldval, base + add);
+-	restore_flags(flags);
++	local_irq_restore(flags);
+ 
+ 	if ((oldval^newval) == 0xff) {  /* we re-read our change: it's ram */
+ 	    printk(KERN_INFO "%lx: RAM\n", add);
+Index: snull/Makefile
+===================================================================
+--- snull/Makefile	(revision 95)
++++ snull/Makefile	(working copy)
+@@ -9,8 +9,8 @@
+   DEBFLAGS = -O2
+ endif
+ 
+-CFLAGS += $(DEBFLAGS)
+-CFLAGS += -I..
++EXTRA_CFLAGS += $(DEBFLAGS)
++EXTRA_CFLAGS += -I..
+ 
+ ifneq ($(KERNELRELEASE),)
+ # call from kernel build system
+@@ -30,10 +30,10 @@
+ 
+ 
+ clean:
+-	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions
++	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions *.markers *.order *.symvers
+ 
+ depend .depend dep:
+-	$(CC) $(CFLAGS) -M *.c > .depend
++	$(CC) $(EXTRA_CFLAGS) -M *.c > .depend
+ 
+ 
+ ifeq (.depend,$(wildcard .depend))
+Index: snull/snull.c
+===================================================================
+--- snull/snull.c	(revision 95)
++++ snull/snull.c	(working copy)
+@@ -15,7 +15,7 @@
+  * $Id: snull.c,v 1.21 2004/11/05 02:36:03 rubini Exp $
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/module.h>
+ #include <linux/init.h>
+ #include <linux/moduleparam.h>
+@@ -55,8 +55,8 @@
+ /*
+  * Do we run in NAPI mode?
+  */
+-static int use_napi = 0;
+-module_param(use_napi, int, 0);
++static int use_napi = 1;
++module_param(use_napi, int, 1);
+ 
+ 
+ /*
+@@ -86,11 +86,12 @@
+ 	int tx_packetlen;
+ 	u8 *tx_packetdata;
+ 	struct sk_buff *skb;
++	struct napi_struct napi;
+ 	spinlock_t lock;
+ };
+ 
+ static void snull_tx_timeout(struct net_device *dev);
+-static void (*snull_interrupt)(int, void *, struct pt_regs *);
++static irqreturn_t (*snull_interrupt)(int, void *, struct pt_regs *);
+ 
+ /*
+  * Set up a device's packet pool.
+@@ -284,14 +285,15 @@
+ /*
+  * The poll implementation.
+  */
+-static int snull_poll(struct net_device *dev, int *budget)
++static int snull_poll(struct napi_struct *napi, int budget)
+ {
+-	int npackets = 0, quota = min(dev->quota, *budget);
++	int npackets = 0;
+ 	struct sk_buff *skb;
+-	struct snull_priv *priv = netdev_priv(dev);
++	struct snull_priv *priv = container_of(napi,struct snull_priv,napi);
+ 	struct snull_packet *pkt;
++	struct net_device * dev = napi->dev;
+     
+-	while (npackets < quota && priv->rx_queue) {
++	while (npackets < budget && priv->rx_queue) {
+ 		pkt = snull_dequeue_buf(dev);
+ 		skb = dev_alloc_skb(pkt->datalen + 2);
+ 		if (! skb) {
+@@ -315,10 +317,10 @@
+ 		snull_release_buffer(pkt);
+ 	}
+ 	/* If we processed all packets, we're done; tell the kernel and reenable ints */
+-	*budget -= npackets;
+-	dev->quota -= npackets;
++	budget -= npackets;
++	napi->weight = budget;
+ 	if (! priv->rx_queue) {
+-		netif_rx_complete(dev);
++		napi_complete(&priv->napi);
+ 		snull_rx_ints(dev, 1);
+ 		return 0;
+ 	}
+@@ -330,7 +332,7 @@
+ /*
+  * The typical interrupt entry point
+  */
+-static void snull_regular_interrupt(int irq, void *dev_id, struct pt_regs *regs)
++static irqreturn_t snull_regular_interrupt(int irq, void *dev_id, struct pt_regs *regs)
+ {
+ 	int statusword;
+ 	struct snull_priv *priv;
+@@ -345,7 +347,7 @@
+ 
+ 	/* paranoid */
+ 	if (!dev)
+-		return;
++		return IRQ_NONE;
+ 
+ 	/* Lock the device */
+ 	priv = netdev_priv(dev);
+@@ -372,13 +374,13 @@
+ 	/* Unlock the device and we are done */
+ 	spin_unlock(&priv->lock);
+ 	if (pkt) snull_release_buffer(pkt); /* Do this outside the lock! */
+-	return;
++	return IRQ_HANDLED;
+ }
+ 
+ /*
+  * A NAPI interrupt handler.
+  */
+-static void snull_napi_interrupt(int irq, void *dev_id, struct pt_regs *regs)
++static irqreturn_t snull_napi_interrupt(int irq, void *dev_id, struct pt_regs *regs)
+ {
+ 	int statusword;
+ 	struct snull_priv *priv;
+@@ -392,7 +394,7 @@
+ 
+ 	/* paranoid */
+ 	if (!dev)
+-		return;
++		return IRQ_NONE;
+ 
+ 	/* Lock the device */
+ 	priv = netdev_priv(dev);
+@@ -403,7 +405,7 @@
+ 	priv->status = 0;
+ 	if (statusword & SNULL_RX_INTR) {
+ 		snull_rx_ints(dev, 0);  /* Disable further interrupts */
+-		netif_rx_schedule(dev);
++		__napi_schedule(&priv->napi);
+ 	}
+ 	if (statusword & SNULL_TX_INTR) {
+         	/* a transmission is over: free the skb */
+@@ -414,7 +416,7 @@
+ 
+ 	/* Unlock the device and we are done */
+ 	spin_unlock(&priv->lock);
+-	return;
++	return IRQ_HANDLED;
+ }
+ 
+ 
+@@ -585,7 +587,7 @@
+ 
+ 
+ int snull_header(struct sk_buff *skb, struct net_device *dev,
+-                unsigned short type, void *daddr, void *saddr,
++                unsigned short type, const void *daddr, const void *saddr,
+                 unsigned int len)
+ {
+ 	struct ethhdr *eth = (struct ethhdr *)skb_push(skb,ETH_HLEN);
+@@ -623,6 +625,25 @@
+ 	return 0; /* success */
+ }
+ 
++static const struct header_ops snull_header_ops = {
++.create = snull_header,
++.rebuild = snull_rebuild_header,
++#define HAVE_HEADER_CACHE
++.cache = NULL,
++.cache_update = NULL,
++};
++
++static const struct net_device_ops snull_netdev_ops = {
++.ndo_open = snull_open,
++.ndo_stop = snull_release,
++.ndo_set_config = snull_config,
++.ndo_start_xmit = snull_tx,
++.ndo_do_ioctl = snull_ioctl,
++.ndo_get_stats = snull_stats,
++.ndo_change_mtu = snull_change_mtu,
++.ndo_tx_timeout = snull_tx_timeout,
++};
++
+ /*
+  * The init function (sometimes called probe).
+  * It is invoked by register_netdev()
+@@ -644,25 +665,28 @@
+ 	 */
+ 	ether_setup(dev); /* assign some of the fields */
+ 
+-	dev->open            = snull_open;
+-	dev->stop            = snull_release;
+-	dev->set_config      = snull_config;
+-	dev->hard_start_xmit = snull_tx;
+-	dev->do_ioctl        = snull_ioctl;
+-	dev->get_stats       = snull_stats;
+-	dev->change_mtu      = snull_change_mtu;  
+-	dev->rebuild_header  = snull_rebuild_header;
+-	dev->hard_header     = snull_header;
+-	dev->tx_timeout      = snull_tx_timeout;
++	//dev->open            = snull_open;
++	//dev->stop            = snull_release;
++	//dev->set_config      = snull_config;
++	//dev->hard_start_xmit = snull_tx;
++	//dev->do_ioctl        = snull_ioctl;
++	//dev->get_stats       = snull_stats;
++	//dev->change_mtu      = snull_change_mtu;  
++	//dev->rebuild_header  = snull_rebuild_header;
++	//dev->hard_header     = snull_header;
++	//dev->tx_timeout      = snull_tx_timeout;
++  dev->netdev_ops = &snull_netdev_ops;
++  dev->header_ops = &snull_header_ops;
++
+ 	dev->watchdog_timeo = timeout;
+-	if (use_napi) {
+-		dev->poll        = snull_poll;
+-		dev->weight      = 2;
+-	}
++	//if (use_napi) {
++	//	dev->poll        = snull_poll;
++	//	dev->weight      = 2;
++	//}
+ 	/* keep the default flags, just add NOARP */
+ 	dev->flags           |= IFF_NOARP;
+ 	dev->features        |= NETIF_F_NO_CSUM;
+-	dev->hard_header_cache = NULL;      /* Disable caching */
++	//dev->hard_header_cache = NULL;      /* Disable caching */
+ 
+ 	/*
+ 	 * Then, initialize the priv field. This encloses the statistics
+@@ -670,6 +694,12 @@
+ 	 */
+ 	priv = netdev_priv(dev);
+ 	memset(priv, 0, sizeof(struct snull_priv));
++  if (use_napi) {
++  priv->napi.poll = snull_poll;
++  priv->napi.weight = 2;
++  priv->napi.dev = dev;
++  }
++  
+ 	spin_lock_init(&priv->lock);
+ 	snull_rx_ints(dev, 1);		/* enable receive interrupts */
+ 	snull_setup_pool(dev);
+Index: tty/Makefile
+===================================================================
+--- tty/Makefile	(revision 95)
++++ tty/Makefile	(working copy)
+@@ -9,13 +9,13 @@
+   DEBFLAGS = -O2
+ endif
+ 
+-CFLAGS += $(DEBFLAGS)
+-CFLAGS += -I..
++EXTRA_CFLAGS += $(DEBFLAGS)
++EXTRA_CFLAGS += -I..
+ 
+ ifneq ($(KERNELRELEASE),)
+ # call from kernel build system
+ 
+-obj-m	:= tiny_tty.o tiny_serial.o
++obj-m := tiny_tty.o #tiny_serial.o
+ 
+ else
+ 
+@@ -35,7 +35,6 @@
+ depend .depend dep:
+ 	$(CC) $(CFLAGS) -M *.c > .depend
+ 
+-
+ ifeq (.depend,$(wildcard .depend))
+ include .depend
+ endif
+Index: tty/tiny_tty.c
+===================================================================
+--- tty/tiny_tty.c	(revision 95)
++++ tty/tiny_tty.c	(working copy)
+@@ -12,7 +12,7 @@
+  * from some kind of hardware.
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/kernel.h>
+ #include <linux/errno.h>
+ #include <linux/init.h>
+@@ -19,10 +19,12 @@
+ #include <linux/module.h>
+ #include <linux/slab.h>
+ #include <linux/wait.h>
++#include <linux/sched.h>
+ #include <linux/tty.h>
+ #include <linux/tty_driver.h>
+ #include <linux/tty_flip.h>
+ #include <linux/serial.h>
++#include <linux/seq_file.h>
+ #include <asm/uaccess.h>
+ 
+ 
+@@ -76,7 +78,7 @@
+ 	/* send the data to the tty layer for users to read.  This doesn't
+ 	 * actually push the data through unless tty->low_latency is set */
+ 	for (i = 0; i < data_size; ++i) {
+-		if (tty->flip.count >= TTY_FLIPBUF_SIZE)
++		if (tty_buffer_request_room(tty, i))
+ 			tty_flip_buffer_push(tty);
+ 		tty_insert_flip_char(tty, data[i], TTY_NORMAL);
+ 	}
+@@ -225,7 +227,7 @@
+ 
+ #define RELEVANT_IFLAG(iflag) ((iflag) & (IGNBRK|BRKINT|IGNPAR|PARMRK|INPCK))
+ 
+-static void tiny_set_termios(struct tty_struct *tty, struct termios *old_termios)
++static void tiny_set_termios(struct tty_struct *tty, struct ktermios *old_termios)
+ {
+ 	unsigned int cflag;
+ 
+@@ -354,36 +356,6 @@
+ 	return 0;
+ }
+ 
+-static int tiny_read_proc(char *page, char **start, off_t off, int count,
+-                          int *eof, void *data)
+-{
+-	struct tiny_serial *tiny;
+-	off_t begin = 0;
+-	int length = 0;
+-	int i;
+-
+-	length += sprintf(page, "tinyserinfo:1.0 driver:%s\n", DRIVER_VERSION);
+-	for (i = 0; i < TINY_TTY_MINORS && length < PAGE_SIZE; ++i) {
+-		tiny = tiny_table[i];
+-		if (tiny == NULL)
+-			continue;
+-
+-		length += sprintf(page+length, "%d\n", i);
+-		if ((length + begin) > (off + count))
+-			goto done;
+-		if ((length + begin) < off) {
+-			begin += length;
+-			length = 0;
+-		}
+-	}
+-	*eof = 1;
+-done:
+-	if (off >= (length + begin))
+-		return 0;
+-	*start = page + (off-begin);
+-	return (count < begin+length-off) ? count : begin + length-off;
+-}
+-
+ #define tiny_ioctl tiny_ioctl_tiocgserial
+ static int tiny_ioctl(struct tty_struct *tty, struct file *file,
+                       unsigned int cmd, unsigned long arg)
+@@ -505,6 +477,34 @@
+ 	return -ENOIOCTLCMD;
+ }
+ 
++static int tiny_proc_show(struct seq_file *m, void *v)
++{
++int i;
++
++seq_printf(m, "tinyserinfo:1.0 driver:%s\n", DRIVER_VERSION);
++
++for (i = 0; i < TINY_TTY_MINORS; ++i) {
++if (tiny_table[i] == NULL)
++continue;
++
++seq_printf(m, "%d\n", i);
++}
++return 0;
++}
++
++static int tiny_proc_open(struct inode *inode, struct file *file)
++{
++return single_open(file, tiny_proc_show, NULL);
++}
++
++static const struct file_operations tiny_proc_fops = {
++.owner = THIS_MODULE,
++.open = tiny_proc_open,
++.read = seq_read,
++.llseek = seq_lseek,
++.release = single_release,
++};
++
+ static struct tty_operations serial_ops = {
+ 	.open = tiny_open,
+ 	.close = tiny_close,
+@@ -511,6 +511,13 @@
+ 	.write = tiny_write,
+ 	.write_room = tiny_write_room,
+ 	.set_termios = tiny_set_termios,
++  .proc_fops = &tiny_proc_fops,
++  /* hack to make the book purty, yet still use these functions in the
++  * real driver. They really should be set up in the serial_ops
++  * structure above... */
++  .tiocmget = tiny_tiocmget,
++  .tiocmset = tiny_tiocmset,
++  .ioctl = tiny_ioctl
+ };
+ 
+ static struct tty_driver *tiny_tty_driver;
+@@ -529,23 +536,15 @@
+ 	tiny_tty_driver->owner = THIS_MODULE;
+ 	tiny_tty_driver->driver_name = "tiny_tty";
+ 	tiny_tty_driver->name = "ttty";
+-	tiny_tty_driver->devfs_name = "tts/ttty%d";
++	//tiny_tty_driver->devfs_name = "tts/ttty%d";
+ 	tiny_tty_driver->major = TINY_TTY_MAJOR,
+ 	tiny_tty_driver->type = TTY_DRIVER_TYPE_SERIAL,
+ 	tiny_tty_driver->subtype = SERIAL_TYPE_NORMAL,
+-	tiny_tty_driver->flags = TTY_DRIVER_REAL_RAW | TTY_DRIVER_NO_DEVFS,
++	tiny_tty_driver->flags = TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV,
+ 	tiny_tty_driver->init_termios = tty_std_termios;
+ 	tiny_tty_driver->init_termios.c_cflag = B9600 | CS8 | CREAD | HUPCL | CLOCAL;
+ 	tty_set_operations(tiny_tty_driver, &serial_ops);
+ 
+-	/* hack to make the book purty, yet still use these functions in the
+-	 * real driver.  They really should be set up in the serial_ops
+-	 * structure above... */
+-	tiny_tty_driver->read_proc = tiny_read_proc;
+-	tiny_tty_driver->tiocmget = tiny_tiocmget;
+-	tiny_tty_driver->tiocmset = tiny_tiocmset;
+-	tiny_tty_driver->ioctl = tiny_ioctl;
+-
+ 	/* register the tty driver */
+ 	retval = tty_register_driver(tiny_tty_driver);
+ 	if (retval) {
+Index: usb/Makefile
+===================================================================
+--- usb/Makefile	(revision 95)
++++ usb/Makefile	(working copy)
+@@ -7,5 +7,5 @@
+ 	$(MAKE) -C $(KERNELDIR) M=$(PWD)
+ 
+ clean:
+-	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions
++	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions *.order *.symvers
+ 
+Index: usb/usb-skeleton.c
+===================================================================
+--- usb/usb-skeleton.c	(revision 95)
++++ usb/usb-skeleton.c	(working copy)
+@@ -13,7 +13,7 @@
+  *
+  */
+ 
+-#include <linux/config.h>
++//#include <linux/config.h>
+ #include <linux/kernel.h>
+ #include <linux/errno.h>
+ #include <linux/init.h>
+@@ -24,6 +24,7 @@
+ #include <linux/usb.h>
+ #include <asm/uaccess.h>
+ 
++#define info(format, arg...) printk(KERN_INFO format "\n" , ## arg)
+ 
+ /* Define these values to match your devices */
+ #define USB_SKEL_VENDOR_ID	0xfff0
+@@ -45,7 +46,7 @@
+ 	struct usb_device *	udev;			/* the usb device for this device */
+ 	struct usb_interface *	interface;		/* the interface for this device */
+ 	unsigned char *		bulk_in_buffer;		/* the buffer to receive data */
+-	size_t			bulk_in_size;		/* the size of the receive buffer */
++	int bulk_in_size; /* the size of the receive buffer */
+ 	__u8			bulk_in_endpointAddr;	/* the address of the bulk in endpoint */
+ 	__u8			bulk_out_endpointAddr;	/* the address of the bulk out endpoint */
+ 	struct kref		kref;
+@@ -120,8 +121,8 @@
+ 	retval = usb_bulk_msg(dev->udev,
+ 			      usb_rcvbulkpipe(dev->udev, dev->bulk_in_endpointAddr),
+ 			      dev->bulk_in_buffer,
+-			      min(dev->bulk_in_size, count),
+-			      &count, HZ*10);
++			      min(dev->bulk_in_size, (int)count),
++			      (int *)&count, HZ*10);
+ 
+ 	/* if the read was successful, copy the data to userspace */
+ 	if (!retval) {
+@@ -134,7 +135,7 @@
+ 	return retval;
+ }
+ 
+-static void skel_write_bulk_callback(struct urb *urb, struct pt_regs *regs)
++static void skel_write_bulk_callback(struct urb *urb)
+ {
+ 	/* sync/async unlink faults aren't errors */
+ 	if (urb->status && 
+@@ -221,7 +222,7 @@
+ static struct usb_class_driver skel_class = {
+ 	.name = "usb/skel%d",
+ 	.fops = &skel_fops,
+-	.mode = S_IFCHR | S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH,
++	//.mode = S_IFCHR | S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH,
+ 	.minor_base = USB_SKEL_MINOR_BASE,
+ };
+ 
+@@ -325,7 +326,7 @@
+ }
+ 
+ static struct usb_driver skel_driver = {
+-	.owner = THIS_MODULE,
++	//.owner = THIS_MODULE,
+ 	.name = "skeleton",
+ 	.id_table = skel_table,
+ 	.probe = skel_probe,

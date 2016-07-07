@@ -1,0 +1,3 @@
+0x4194dc52	skull_variable	/home/thr/share/ldd3_examples/skull/skull_init	EXPORT_SYMBOL
+0xe3072ac3	skull_fn1	/home/thr/share/ldd3_examples/skull/skull_init	EXPORT_SYMBOL
+0x7ae54cc2	skull_fn2	/home/thr/share/ldd3_examples/skull/skull_init	EXPORT_SYMBOL

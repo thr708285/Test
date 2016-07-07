@@ -1,0 +1,1 @@
+cmd_/home/thr/share/ldd3_examples/sculld/sculld.o := ld -m elf_i386   -r -o /home/thr/share/ldd3_examples/sculld/sculld.o /home/thr/share/ldd3_examples/sculld/main.o /home/thr/share/ldd3_examples/sculld/mmap.o 
